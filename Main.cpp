@@ -5,19 +5,44 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
+#include <cmath>
+#include <glm/gtc/constants.hpp>
+
+float halfPi = glm::half_pi<float>();
+float pi = glm::pi<float>();       
 
 const char* vertexShaderSource = "#version 330 core\n"
 "layout (location = 0) in vec3 aPos;\n"
-"void main()\n"
-"{\n"
-"   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+"layout (location = 1) in vec3 aNormal;\n"
+"out vec3 Normal;\n"
+"out vec3 FragPos;\n"
+"uniform mat4 model;\n"
+"uniform mat4 view;\n"
+"uniform mat4 projection;\n"
+"void main() {\n"
+"   FragPos = vec3(model * vec4(aPos, 1.0));\n"
+"   Normal = mat3(transpose(inverse(model))) * aNormal;\n"
+"   gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
 "}\0";
 
 const char* fragmentShaderSource = "#version 330 core\n"
 "out vec4 FragColor;\n"
-"void main()\n"
-"{\n"
-"   FragColor = vec4(1.0f, 0.5f, 0.2f, 1.0f); // Bright Orange\n"
+"in vec3 Normal;\n"
+"in vec3 FragPos;\n"
+"void main() {\n"
+"   // Basic Ambient Light\n"
+"   float ambientStrength = 0.2;\n"
+"   vec3 lightColor = vec3(1.0, 1.0, 1.0);\n"
+"   vec3 objectColor = vec4(1.0f, 0.5f, 0.2f, 1.0f).rgb; // Your orange\n"
+"   \n"
+"   // Diffuse Light (The part that adds depth)\n"
+"   vec3 norm = normalize(Normal);\n"
+"   vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0)); // Light coming from a corner\n"
+"   float diff = max(dot(norm, lightDir), 0.0);\n"
+"   vec3 diffuse = diff * lightColor;\n"
+"   \n"
+"   vec3 result = (ambientStrength + diffuse) * objectColor;\n"
+"   FragColor = vec4(result, 1.0);\n"
 "}\n\0";
 
 struct Vertex 
@@ -98,69 +123,99 @@ public:
     }
 };
 
-int main()
+class Planet
 {
-	// this is to initialize the window and OpenGL context
+public:
+    Mesh* mesh;
+    float radius;
+
+    Planet(float radius, int rings, int sectors)
+    {
+        std::vector<Vertex> verts;
+        std::vector<unsigned int> inds;
+
+        // Sphere generation logic using latitude and longitude [cite: 6]
+        for (int r = 0; r < rings; ++r) 
+        {
+            float phi = -halfPi + pi * (float)r / (rings - 1);
+            for (int s = 0; s < sectors; ++s) 
+            {
+                float theta = 2.0f * pi * (float)s / (sectors - 1);
+
+                Vertex v;
+                v.Position.x = cos(phi) * cos(theta) * radius;
+                v.Position.y = sin(phi) * radius;
+                v.Position.z = cos(phi) * sin(theta) * radius;
+                v.Normal = glm::normalize(v.Position);
+                verts.push_back(v);
+            }
+    }
+
+        for (int r = 0; r < rings - 1; ++r) 
+        {
+            for (int s = 0; s < sectors - 1; ++s) 
+            {
+                inds.push_back(r * sectors + s);
+                inds.push_back((r + 1) * sectors + s);
+                inds.push_back((r + 1) * sectors + (s + 1));
+                inds.push_back(r * sectors + s);
+                inds.push_back((r + 1) * sectors + (s + 1));
+                inds.push_back(r * sectors + (s + 1));
+            }
+        }
+        mesh = new Mesh(verts, inds);
+    }
+
+    void Draw() { mesh->Draw(); }
+};
+
+int main() 
+{
     glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Mesh Test", NULL, NULL);
-    if (!window) { glfwTerminate(); return -1; }
+    GLFWwindow* window = glfwCreateWindow(800, 600, "Planet Generation", NULL, NULL);
     glfwMakeContextCurrent(window);
+    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+    glEnable(GL_DEPTH_TEST); // Needed for 3D
 
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) return -1;
-
-    // this compiles the shaders to create the shader program
-    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
-
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
-
+    // Shader compilation
+    unsigned int vShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vShader);
+    unsigned int fShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fShader);
     unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
+    glAttachShader(shaderProgram, vShader);
+    glAttachShader(shaderProgram, fShader);
     glLinkProgram(shaderProgram);
 
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
+    Planet myPlanet(1.0f, 50, 50);
 
-    
-    std::vector<Vertex> vertices = {
-        {{-0.5f, -0.5f, 0.0f}, {0,0,1}, {0,0}}, // Bottom Left
-        {{ 0.5f, -0.5f, 0.0f}, {0,0,1}, {1,0}}, // Bottom Right
-        {{ 0.0f,  0.5f, 0.0f}, {0,0,1}, {0.5, 1}} // Top Center
-    };
-    std::vector<unsigned int> indices = { 0, 1, 2 };
-
-    // this creates the mesh
-    Mesh testMesh(vertices, indices);
-
-    // this creates the window
-    while (!glfwWindowShouldClose(window))
-    {
-        // pressing escape closes window
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            glfwSetWindowShouldClose(window, true);
-
-        // Background Color
+    while (!glfwWindowShouldClose(window)) {
         glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        // DRAWING
         glUseProgram(shaderProgram);
-        testMesh.Draw();
+
+        // Setup MVP Matrices for 3D view 
+        glm::mat4 model = glm::rotate(glm::mat4(1.0f), (float)glfwGetTime(), glm::vec3(0, 1, 0));
+        glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0, 0, -3.0f));
+        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, 100.0f);
+
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+        float time = (float)glfwGetTime();
+        model = glm::rotate(model, time, glm::vec3(0.0f, 1.0f, 0.0f)); // Rotate around Y axis
+        model = glm::rotate(model, time * 0.5f, glm::vec3(1.0f, 0.0f, 0.0f)); // Rotate around X axis
+
+        myPlanet.Draw();
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // this is to cleanup the shaders and terminate the window
-    glDeleteProgram(shaderProgram);
     glfwTerminate();
     return 0;
 }
