@@ -1,221 +1,228 @@
 #include <iostream>
+#include <vector>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
-#include <vector>
-#include <cmath>
-#include <glm/gtc/constants.hpp>
+#include "FastNoiseLite.h"
 
-float halfPi = glm::half_pi<float>();
-float pi = glm::pi<float>();       
+//GLOBALS
+static float lastX = 600, lastY = 400;
+static bool firstMouse = true;
+static float deltaTime = 0.0f, lastFrame = 0.0f;
 
-const char* vertexShaderSource = "#version 330 core\n"
-"layout (location = 0) in vec3 aPos;\n"
-"layout (location = 1) in vec3 aNormal;\n"
-"out vec3 Normal;\n"
-"out vec3 FragPos;\n"
-"uniform mat4 model;\n"
-"uniform mat4 view;\n"
-"uniform mat4 projection;\n"
-"void main() {\n"
-"   FragPos = vec3(model * vec4(aPos, 1.0));\n"
-"   Normal = mat3(transpose(inverse(model))) * aNormal;\n"
-"   gl_Position = projection * view * model * vec4(aPos, 1.0);\n"
-"}\0";
+// SHADERS
+static const char* vertexShaderSource = R"glsl(
+    #version 330 core
+    layout (location = 0) in vec3 aPos;
+    layout (location = 1) in vec3 aNormal;
+    out vec3 Normal;
+    out vec3 FragPos;
+    uniform mat4 model; uniform mat4 view; uniform mat4 projection;
+    void main() {
+        FragPos = vec3(model * vec4(aPos, 1.0));
+        Normal = mat3(transpose(inverse(model))) * aNormal;
+        gl_Position = projection * view * vec4(FragPos, 1.0);
+    }
+)glsl";
 
-const char* fragmentShaderSource = "#version 330 core\n"
-"out vec4 FragColor;\n"
-"in vec3 Normal;\n"
-"in vec3 FragPos;\n"
-"void main() {\n"
-"   // Basic Ambient Light\n"
-"   float ambientStrength = 0.2;\n"
-"   vec3 lightColor = vec3(1.0, 1.0, 1.0);\n"
-"   vec3 objectColor = vec4(1.0f, 0.5f, 0.2f, 1.0f).rgb; // Your orange\n"
-"   \n"
-"   // Diffuse Light (The part that adds depth)\n"
-"   vec3 norm = normalize(Normal);\n"
-"   vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0)); // Light coming from a corner\n"
-"   float diff = max(dot(norm, lightDir), 0.0);\n"
-"   vec3 diffuse = diff * lightColor;\n"
-"   \n"
-"   vec3 result = (ambientStrength + diffuse) * objectColor;\n"
-"   FragColor = vec4(result, 1.0);\n"
-"}\n\0";
+static const char* fragmentShaderSource = R"glsl(
+    #version 330 core
+    out vec4 FragColor;
+    in vec3 Normal;
+    in vec3 FragPos;
+    uniform vec3 lightDir;
+    uniform float planetRadius;
 
-struct Vertex 
+    void main() {
+        vec3 norm = normalize(Normal);
+        float diff = max(dot(norm, normalize(lightDir)), 0.15); // Ambient + Diffuse
+        
+        float altitude = length(FragPos);
+        vec3 color;
+
+        if (altitude < planetRadius + 0.3) color = vec3(0.05, 0.2, 0.5);      // Water
+        else if (altitude < planetRadius + 0.8) color = vec3(0.7, 0.6, 0.4); // Sand
+        else if (altitude < planetRadius + 3.5) color = vec3(0.1, 0.4, 0.1); // Grass
+        else color = vec3(0.9, 0.9, 1.0);                                   // Snow
+
+        FragColor = vec4(color * diff, 1.0);
+    }
+)glsl";
+
+//CAMERA CLASS
+enum Camera_Movement { FORWARD, BACKWARD, LEFT, RIGHT };
+class Camera 
 {
+public:
     glm::vec3 Position;
-    glm::vec3 Normal;
-    glm::vec2 TexCoords;
-};
+    glm::vec3 Front = glm::vec3(0.0f, 0.0f, -1.0f);
+    glm::vec3 Up; glm::vec3 Right;
+    glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
+    float Yaw = -90.0f, Pitch = 0.0f, MovementSpeed = 60.0f;
 
-class Mesh
-{
+    Camera(glm::vec3 pos) : Position(pos) { updateVectors(); }
+    glm::mat4 GetViewMatrix() { return glm::lookAt(Position, Position + Front, Up); }
+    void ProcessKeyboard(Camera_Movement dir, float dt) 
+    {
+        float v = MovementSpeed * dt;
+        if (dir == FORWARD) Position += Front * v; if (dir == BACKWARD) Position -= Front * v;
+        if (dir == LEFT) Position -= Right * v; if (dir == RIGHT) Position += Right * v;
+    }
+    void ProcessMouse(float xoff, float yoff) 
+    {
+        Yaw += xoff * 0.1f; Pitch += yoff * 0.1f;
+        if (Pitch > 89.0f) Pitch = 89.0f; if (Pitch < -89.0f) Pitch = -89.0f;
+        updateVectors();
+    }
 private:
-    unsigned int VAO, VBO, EBO;
-    void setupMesh()
+    void updateVectors() 
     {
-        glGenVertexArrays(1, &VAO);
-        glGenBuffers(1, &VBO);
-        glGenBuffers(1, &EBO);
-
-        glBindVertexArray(VAO);
-
-        // copies vertex data from RAM to GPU 
-        glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
-
-        // uploads the order in which the vertices should be drawn
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
-
-        // tells GPU how to interpret the vertex data
-        glEnableVertexAttribArray(0);
-		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-
-        // same as the previous line but with position data instead
-		glEnableVertexAttribArray(1);
-		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
-
-		// defines how to interpret the texture coordinate data
-		glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
-
-		glBindVertexArray(0);
-    }
-
-public:
-    std::vector<Vertex> vertices;
-    std::vector<unsigned int> indices;
-
-	// mesh constructor to initialize the vertex and index data, and set up the buffers
-    Mesh(std::vector<Vertex> vertices, std::vector<unsigned int> indices)
-    {
-        this->vertices = vertices;
-        this->indices = indices;
-		setupMesh();
-    }
-
-    // mesh destructor to clean up buffers
-    ~Mesh()
-    {
-        glDeleteVertexArrays(1, &VAO);
-        glDeleteBuffers(1, &VBO);
-		glDeleteBuffers(1, &EBO);
-    }
-
-	// this function draws the mesh using the vertex array and index data
-    void Draw()
-    {
-		glBindVertexArray(VAO);
-		glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
-    }
-
-	// this function updates the vertex buffer with new vertex data
-    void updateBuffers()
-    {
-        glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex), &vertices[0]);
+        glm::vec3 f;
+        f.x = cos(glm::radians(Yaw)) * cos(glm::radians(Pitch));
+        f.y = sin(glm::radians(Pitch));
+        f.z = sin(glm::radians(Yaw)) * cos(glm::radians(Pitch));
+        Front = glm::normalize(f);
+        Right = glm::normalize(glm::cross(Front, WorldUp));
+        Up = glm::normalize(glm::cross(Right, Front));
     }
 };
 
-class Planet
+static Camera camera(glm::vec3(0.0f, 0.0f, 180.0f));
+
+//PLANET FACE CLASS
+struct Vertex 
+{   
+    glm::vec3 Position; 
+    glm::vec3 Normal; 
+};
+class PlanetFace 
 {
 public:
-    Mesh* mesh;
-    float radius;
+    unsigned int VAO, VBO, EBO;
+    int indexCount;
 
-    Planet(float radius, int rings, int sectors)
+    PlanetFace(int res, glm::vec3 localUp, float radius, FastNoiseLite& noise) 
     {
         std::vector<Vertex> verts;
-        std::vector<unsigned int> inds;
+        std::vector<unsigned int> indices;
+        glm::vec3 axisA = glm::vec3(localUp.y, localUp.z, localUp.x);
+        glm::vec3 axisB = glm::cross(localUp, axisA);
 
-        // Sphere generation logic using latitude and longitude [cite: 6]
-        for (int r = 0; r < rings; ++r) 
+        for (int y = 0; y < res; y++) 
         {
-            float phi = -halfPi + pi * (float)r / (rings - 1);
-            for (int s = 0; s < sectors; ++s) 
+            for (int x = 0; x < res; x++) 
             {
-                float theta = 2.0f * pi * (float)s / (sectors - 1);
+                int i = x + y * res;
+                glm::vec2 percent = glm::vec2(x, y) / (float)(res - 1);
+                glm::vec3 pointOnUnitCube = localUp + (percent.x - 0.5f) * 2.0f * axisA + (percent.y - 0.5f) * 2.0f * axisB;
+                glm::vec3 pointOnUnitSphere = glm::normalize(pointOnUnitCube);
 
-                Vertex v;
-                v.Position.x = cos(phi) * cos(theta) * radius;
-                v.Position.y = sin(phi) * radius;
-                v.Position.z = cos(phi) * sin(theta) * radius;
-                v.Normal = glm::normalize(v.Position);
-                verts.push_back(v);
-            }
-    }
+                // Sample 3D noise using sphere coordinates
+                float n = noise.GetNoise(pointOnUnitSphere.x * 100.0f, pointOnUnitSphere.y * 100.0f, pointOnUnitSphere.z * 100.0f);
+                float elevation = radius + (n * 10.0f);
 
-        for (int r = 0; r < rings - 1; ++r) 
-        {
-            for (int s = 0; s < sectors - 1; ++s) 
-            {
-                inds.push_back(r * sectors + s);
-                inds.push_back((r + 1) * sectors + s);
-                inds.push_back((r + 1) * sectors + (s + 1));
-                inds.push_back(r * sectors + s);
-                inds.push_back((r + 1) * sectors + (s + 1));
-                inds.push_back(r * sectors + (s + 1));
+                verts.push_back({ pointOnUnitSphere * elevation, pointOnUnitSphere });
+
+                if (x < res - 1 && y < res - 1) {
+                    indices.push_back(i); indices.push_back(i + res + 1); indices.push_back(i + res);
+                    indices.push_back(i); indices.push_back(i + 1); indices.push_back(i + res + 1);
+                }
             }
         }
-        mesh = new Mesh(verts, inds);
+        indexCount = (int)indices.size();
+        glGenVertexArrays(1, &VAO); glGenBuffers(1, &VBO); glGenBuffers(1, &EBO);
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0); glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)sizeof(glm::vec3)); glEnableVertexAttribArray(1);
     }
 
-    void Draw() { mesh->Draw(); }
+    void draw() { glBindVertexArray(VAO); glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0); }
 };
+
+// MAIN PLANET CLASS
+class ProceduralPlanet 
+{
+public:
+    std::vector<PlanetFace*> faces;
+    FastNoiseLite noise;
+    float radius;
+
+    ProceduralPlanet(float r, int res) : radius(r) 
+    {
+        noise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+        noise.SetFrequency(0.012f);
+        noise.SetFractalType(FastNoiseLite::FractalType_FBm);
+        noise.SetFractalOctaves(5);
+
+        // Create the 6 sides of the cube
+        glm::vec3 directions[] = { glm::vec3(0,1,0), glm::vec3(0,-1,0), glm::vec3(-1,0,0), glm::vec3(1,0,0), glm::vec3(0,0,1), glm::vec3(0,0,-1) };
+        for (int i = 0; i < 6; i++) 
+        {
+            faces.push_back(new PlanetFace(res, directions[i], radius, noise));
+        }
+    }
+    void draw() { for (auto f : faces) f->draw(); }
+};
+
+//CALLBACKS & MAIN
+void mouse_callback(GLFWwindow* w, double x, double y) 
+{
+    if (firstMouse) 
+    { 
+        lastX = (float)x; lastY = (float)y;
+        firstMouse = false; 
+    }
+    camera.ProcessMouse((float)x - lastX, lastY - (float)y);
+    lastX = (float)x; lastY = (float)y;
+}
 
 int main() 
 {
     glfwInit();
-    GLFWwindow* window = glfwCreateWindow(800, 600, "Planet Generation", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(1200, 800, "Full Procedural Planet", NULL, NULL);
     glfwMakeContextCurrent(window);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetCursorPosCallback(window, mouse_callback);
     gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
-    glEnable(GL_DEPTH_TEST); // Needed for 3D
+    glEnable(GL_DEPTH_TEST);
 
-    // Shader compilation
-    unsigned int vShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vShader);
-    unsigned int fShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fShader);
-    unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vShader);
-    glAttachShader(shaderProgram, fShader);
-    glLinkProgram(shaderProgram);
+    ProceduralPlanet planet(60.0f, 100); // Radius 60, Resolution 100 per face
 
-    Planet myPlanet(1.0f, 50, 50);
+    unsigned int vs = glCreateShader(GL_VERTEX_SHADER); glShaderSource(vs, 1, &vertexShaderSource, NULL); glCompileShader(vs);
+    unsigned int fs = glCreateShader(GL_FRAGMENT_SHADER); glShaderSource(fs, 1, &fragmentShaderSource, NULL); glCompileShader(fs);
+    unsigned int prog = glCreateProgram(); glAttachShader(prog, vs); glAttachShader(prog, fs); glLinkProgram(prog);
 
-    while (!glfwWindowShouldClose(window)) {
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    while (!glfwWindowShouldClose(window)) 
+    {
+        float c = (float)glfwGetTime(); deltaTime = c - lastFrame; lastFrame = c;
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(FORWARD, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(BACKWARD, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(LEFT, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.ProcessKeyboard(RIGHT, deltaTime);
+
+        glClearColor(0.02f, 0.02f, 0.04f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        glUseProgram(shaderProgram);
+        glUseProgram(prog);
+        glm::mat4 p = glm::perspective(glm::radians(45.0f), 1200.0f / 800.0f, 0.1f, 2000.0f);
+        glm::mat4 v = camera.GetViewMatrix();
+        glm::mat4 m = glm::rotate(glm::mat4(1.0f), (float)glfwGetTime() * 0.05f, glm::vec3(0, 1, 0));
 
-        // Setup MVP Matrices for 3D view 
-        glm::mat4 model = glm::rotate(glm::mat4(1.0f), (float)glfwGetTime(), glm::vec3(0, 1, 0));
-        glm::mat4 view = glm::translate(glm::mat4(1.0f), glm::vec3(0, 0, -3.0f));
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f), 800.0f / 600.0f, 0.1f, 100.0f);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "projection"), 1, GL_FALSE, glm::value_ptr(p));
+        glUniformMatrix4fv(glGetUniformLocation(prog, "view"), 1, GL_FALSE, glm::value_ptr(v));
+        glUniformMatrix4fv(glGetUniformLocation(prog, "model"), 1, GL_FALSE, glm::value_ptr(m));
+        glUniform3f(glGetUniformLocation(prog, "lightDir"), 1.0f, 1.0f, 1.0f);
+        glUniform1f(glGetUniformLocation(prog, "planetRadius"), 60.0f);
 
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
-        float time = (float)glfwGetTime();
-        model = glm::rotate(model, time, glm::vec3(0.0f, 1.0f, 0.0f)); // Rotate around Y axis
-        model = glm::rotate(model, time * 0.5f, glm::vec3(1.0f, 0.0f, 0.0f)); // Rotate around X axis
-
-        myPlanet.Draw();
-
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        planet.draw();
+        glfwSwapBuffers(window); glfwPollEvents();
     }
-
-    glfwTerminate();
-    return 0;
+    glfwTerminate(); return 0;
 }
