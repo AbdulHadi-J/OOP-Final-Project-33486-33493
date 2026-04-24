@@ -6,8 +6,11 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include "FastNoiseLite.h"
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
 
-//GLOBALS
+// GLOBALS
 static float lastX = 600, lastY = 400;
 static bool firstMouse = true;
 static float deltaTime = 0.0f, lastFrame = 0.0f;
@@ -37,7 +40,7 @@ static const char* fragmentShaderSource = R"glsl(
 
     void main() {
         vec3 norm = normalize(Normal);
-        float diff = max(dot(norm, normalize(lightDir)), 0.15); // Ambient + Diffuse
+        float diff = max(dot(norm, normalize(lightDir)), 0.15);
         
         float altitude = length(FragPos);
         vec3 color;
@@ -51,7 +54,7 @@ static const char* fragmentShaderSource = R"glsl(
     }
 )glsl";
 
-//CAMERA CLASS
+// CAMERA CLASS
 enum Camera_Movement { FORWARD, BACKWARD, LEFT, RIGHT };
 class Camera 
 {
@@ -62,8 +65,10 @@ public:
     glm::vec3 WorldUp = glm::vec3(0.0f, 1.0f, 0.0f);
     float Yaw = -90.0f, Pitch = 0.0f, MovementSpeed = 60.0f;
 
-    Camera(glm::vec3 pos) : Position(pos) { updateVectors(); }
-    glm::mat4 GetViewMatrix() { return glm::lookAt(Position, Position + Front, Up); }
+    Camera(glm::vec3 pos) : Position(pos) 
+        { updateVectors(); }
+    glm::mat4 GetViewMatrix() 
+        { return glm::lookAt(Position, Position + Front, Up); }
     void ProcessKeyboard(Camera_Movement dir, float dt) 
     {
         float v = MovementSpeed * dt;
@@ -91,95 +96,128 @@ private:
 
 static Camera camera(glm::vec3(0.0f, 0.0f, 180.0f));
 
-//PLANET FACE CLASS
+// PLANET FACE CLASS
 struct Vertex 
-{   
-    glm::vec3 Position; 
-    glm::vec3 Normal; 
+{
+    glm::vec3 Position;
+    glm::vec3 Normal;
 };
+
 class PlanetFace 
 {
 public:
     unsigned int VAO, VBO, EBO;
     int indexCount;
+    int resolution;
+    glm::vec3 localUp;
 
-    PlanetFace(int res, glm::vec3 localUp, float radius, FastNoiseLite& noise) 
+    PlanetFace(int res, glm::vec3 up) : resolution(res), localUp(up) 
+    {
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+    }
+
+    void constructMesh(float radius, FastNoiseLite& noise, float heightMult) 
     {
         std::vector<Vertex> verts;
         std::vector<unsigned int> indices;
         glm::vec3 axisA = glm::vec3(localUp.y, localUp.z, localUp.x);
         glm::vec3 axisB = glm::cross(localUp, axisA);
 
-        for (int y = 0; y < res; y++) 
+        for (int y = 0; y < resolution; y++) 
         {
-            for (int x = 0; x < res; x++) 
+            for (int x = 0; x < resolution; x++) 
             {
-                int i = x + y * res;
-                glm::vec2 percent = glm::vec2(x, y) / (float)(res - 1);
+                int i = x + y * resolution;
+                glm::vec2 percent = glm::vec2(x, y) / (float)(resolution - 1);
                 glm::vec3 pointOnUnitCube = localUp + (percent.x - 0.5f) * 2.0f * axisA + (percent.y - 0.5f) * 2.0f * axisB;
                 glm::vec3 pointOnUnitSphere = glm::normalize(pointOnUnitCube);
 
-                // Sample 3D noise using sphere coordinates
                 float n = noise.GetNoise(pointOnUnitSphere.x * 100.0f, pointOnUnitSphere.y * 100.0f, pointOnUnitSphere.z * 100.0f);
-                float elevation = radius + (n * 10.0f);
+                float elevation = radius + (n * heightMult);
 
                 verts.push_back({ pointOnUnitSphere * elevation, pointOnUnitSphere });
 
-                if (x < res - 1 && y < res - 1) {
-                    indices.push_back(i); indices.push_back(i + res + 1); indices.push_back(i + res);
-                    indices.push_back(i); indices.push_back(i + 1); indices.push_back(i + res + 1);
+                if (x < resolution - 1 && y < resolution - 1) 
+                {
+                    indices.push_back(i); indices.push_back(i + resolution + 1); indices.push_back(i + resolution);
+                    indices.push_back(i); indices.push_back(i + 1); indices.push_back(i + resolution + 1);
                 }
             }
         }
         indexCount = (int)indices.size();
-        glGenVertexArrays(1, &VAO); glGenBuffers(1, &VBO); glGenBuffers(1, &EBO);
         glBindVertexArray(VAO);
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(Vertex), verts.data(), GL_DYNAMIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_DYNAMIC_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0); glEnableVertexAttribArray(0);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)sizeof(glm::vec3)); glEnableVertexAttribArray(1);
     }
 
-    void draw() { glBindVertexArray(VAO); glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0); }
+    void draw() 
+    {
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, indexCount, GL_UNSIGNED_INT, 0);
+    }
 };
 
 // MAIN PLANET CLASS
-class ProceduralPlanet 
+class ProceduralPlanet
 {
-public:
+private:
     std::vector<PlanetFace*> faces;
     FastNoiseLite noise;
-    float radius;
+    int resolution;
 
-    ProceduralPlanet(float r, int res) : radius(r) 
+public:
+    float radius;
+    float mountainHeight = 10.0f;
+    float mountainFreq = 0.012f;
+
+    ProceduralPlanet(float r, int res) : radius(r), resolution(res) 
     {
         noise.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
-        noise.SetFrequency(0.012f);
+        noise.SetFrequency(mountainFreq);
         noise.SetFractalType(FastNoiseLite::FractalType_FBm);
         noise.SetFractalOctaves(5);
 
-        // Create the 6 sides of the cube
         glm::vec3 directions[] = { glm::vec3(0,1,0), glm::vec3(0,-1,0), glm::vec3(-1,0,0), glm::vec3(1,0,0), glm::vec3(0,0,1), glm::vec3(0,0,-1) };
         for (int i = 0; i < 6; i++) 
         {
-            faces.push_back(new PlanetFace(res, directions[i], radius, noise));
+            faces.push_back(new PlanetFace(resolution, directions[i]));
         }
+        updateMesh();
     }
+
+    void updateMesh()
+    {
+        noise.SetFrequency(mountainFreq);
+        for (auto f : faces) f->constructMesh(radius, noise, mountainHeight);
+    }
+
+    void renderUI() 
+    {
+        ImGui::Begin("Planet Editor");
+        if (ImGui::SliderFloat("Mountain Height", &mountainHeight, 0.0f, 40.0f)) updateMesh();
+        if (ImGui::SliderFloat("Noise Frequency", &mountainFreq, 0.001f, 0.05f)) updateMesh();
+        ImGui::Text("Hold L-CTRL for UI, L-ALT for Camera");
+        ImGui::End();
+    }
+
     void draw() { for (auto f : faces) f->draw(); }
 };
 
-//CALLBACKS & MAIN
+// CALLBACKS
 void mouse_callback(GLFWwindow* w, double x, double y) 
 {
-    if (firstMouse) 
-    { 
+    if (glfwGetInputMode(w, GLFW_CURSOR) == GLFW_CURSOR_DISABLED) 
+    {
+        if (firstMouse) { lastX = (float)x; lastY = (float)y; firstMouse = false; }
+        camera.ProcessMouse((float)x - lastX, lastY - (float)y);
         lastX = (float)x; lastY = (float)y;
-        firstMouse = false; 
     }
-    camera.ProcessMouse((float)x - lastX, lastY - (float)y);
-    lastX = (float)x; lastY = (float)y;
 }
 
 int main() 
@@ -192,20 +230,37 @@ int main()
     gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
     glEnable(GL_DEPTH_TEST);
 
-    ProceduralPlanet planet(60.0f, 100); // Radius 60, Resolution 100 per face
+    // IMGUI SETUP
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui_ImplGlfw_InitForOpenGL(window, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
+
+    ProceduralPlanet planet(60.0f, 100);
 
     unsigned int vs = glCreateShader(GL_VERTEX_SHADER); glShaderSource(vs, 1, &vertexShaderSource, NULL); glCompileShader(vs);
     unsigned int fs = glCreateShader(GL_FRAGMENT_SHADER); glShaderSource(fs, 1, &fragmentShaderSource, NULL); glCompileShader(fs);
     unsigned int prog = glCreateProgram(); glAttachShader(prog, vs); glAttachShader(prog, fs); glLinkProgram(prog);
 
-    while (!glfwWindowShouldClose(window)) 
-    {
+    while (!glfwWindowShouldClose(window)) {
         float c = (float)glfwGetTime(); deltaTime = c - lastFrame; lastFrame = c;
+
+        // Input Management
         if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, true);
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(FORWARD, deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(BACKWARD, deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(LEFT, deltaTime);
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.ProcessKeyboard(RIGHT, deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        if (glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS) glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+        if (glfwGetInputMode(window, GLFW_CURSOR) == GLFW_CURSOR_DISABLED) 
+        {
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) camera.ProcessKeyboard(FORWARD, deltaTime);
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) camera.ProcessKeyboard(BACKWARD, deltaTime);
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) camera.ProcessKeyboard(LEFT, deltaTime);
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) camera.ProcessKeyboard(RIGHT, deltaTime);
+        }
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
 
         glClearColor(0.02f, 0.02f, 0.04f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -219,10 +274,20 @@ int main()
         glUniformMatrix4fv(glGetUniformLocation(prog, "view"), 1, GL_FALSE, glm::value_ptr(v));
         glUniformMatrix4fv(glGetUniformLocation(prog, "model"), 1, GL_FALSE, glm::value_ptr(m));
         glUniform3f(glGetUniformLocation(prog, "lightDir"), 1.0f, 1.0f, 1.0f);
-        glUniform1f(glGetUniformLocation(prog, "planetRadius"), 60.0f);
+        glUniform1f(glGetUniformLocation(prog, "planetRadius"), planet.radius);
 
         planet.draw();
+
+        planet.renderUI();
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
         glfwSwapBuffers(window); glfwPollEvents();
     }
-    glfwTerminate(); return 0;
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+    glfwTerminate();
+    return 0;
 }
